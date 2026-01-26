@@ -10,6 +10,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const auth = @import("aws_authentication.zig");
+const imds = @import("aws_imds.zig");
 
 const scoped_log = std.log.scoped(.aws_credentials);
 /// Specifies logging level. This should not be touched unless the normal
@@ -219,168 +220,32 @@ fn getContainerCredentials(allocator: std.mem.Allocator) !?auth.Credentials {
 }
 
 fn getImdsv2Credentials(allocator: std.mem.Allocator) !?auth.Credentials {
-    var token: ?[]u8 = null;
-    defer if (token) |t| allocator.free(t);
-    var cl = std.http.Client{ .allocator = allocator };
-    defer cl.deinit(); // I don't belive connection pooling would help much here as it's non-ssl and local
-    // Get token
-    {
-        var aw: std.Io.Writer.Allocating = .init(allocator);
-        defer aw.deinit();
-        const response_payload = &aw.writer;
-        const req = try cl.fetch(.{
-            .method = .PUT,
-            .location = .{ .url = "http://169.254.169.254/latest/api/token" },
-            .extra_headers = &[_]std.http.Header{
-                .{ .name = "X-aws-ec2-metadata-token-ttl-seconds", .value = "21600" },
-            },
-            .response_writer = response_payload,
-        });
-        if (req.status != .ok) {
-            log.warn("Bad status code received from IMDS v2: {}", .{@intFromEnum(req.status)});
-            return null;
-        }
-        if (aw.written().len == 0) {
-            log.warn("Unexpected zero response from IMDS v2", .{});
-            return null;
-        }
-
-        token = try aw.toOwnedSlice();
-        errdefer if (token) |t| allocator.free(t);
-    }
-    std.debug.assert(token != null);
-    log.debug("Got token from IMDSv2: {s}", .{token.?});
-    const role_name = try getImdsRoleName(allocator, &cl, token.?);
-    if (role_name == null) {
-        log.info("No role is associated with this instance", .{});
-        return null;
-    }
-    defer allocator.free(role_name.?);
-    log.debug("Got role name '{s}'", .{role_name.?});
-    return getImdsCredentials(allocator, &cl, role_name.?, token.?);
-}
-
-fn getImdsRoleName(allocator: std.mem.Allocator, client: *std.http.Client, imds_token: []u8) !?[]const u8 {
-    //     {
-    //   "Code" : "Success",
-    //   "LastUpdated" : "2022-02-09T05:42:09Z",
-    //   "InstanceProfileArn" : "arn:aws:iam::550620852718:instance-profile/ec2-dev",
-    //   "InstanceProfileId" : "AIPAYAM4POHXCFNKZ7HU2"
-    // }
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-    const response_payload = &aw.writer;
-    const req = try client.fetch(.{
-        .method = .GET,
-        .location = .{ .url = "http://169.254.169.254/latest/meta-data/iam/info" },
-        .extra_headers = &[_]std.http.Header{
-            .{ .name = "X-aws-ec2-metadata-token", .value = imds_token },
-        },
-        .response_writer = response_payload,
-    });
-
-    if (req.status != .ok and req.status != .not_found) {
-        log.warn("Bad status code received from IMDS iam endpoint: {}", .{@intFromEnum(req.status)});
-        return null;
-    }
-    if (req.status == .not_found) return null;
-    if (aw.written().len == 0) {
-        log.warn("Unexpected empty response from IMDS endpoint post token", .{});
-        return null;
-    }
-
-    const ImdsResponse = struct {
-        Code: []const u8,
-        LastUpdated: []const u8,
-        InstanceProfileArn: []const u8,
-        InstanceProfileId: []const u8,
-    };
-    const imds_response = std.json.parseFromSlice(ImdsResponse, allocator, aw.written(), .{}) catch |e| {
-        log.err("Unexpected Json response from IMDS endpoint: {s}", .{aw.written()});
-        log.err("Error parsing json: {}", .{e});
-        if (@errorReturnTrace()) |trace| {
-            std.debug.dumpStackTrace(trace.*);
+    var client = imds.ImdsClient.init(allocator, .{}) catch |e| {
+        if (e == imds.ImdsError.ImdsDisabled) {
+            log.info("IMDS is disabled", .{});
+        } else {
+            log.warn("Failed to initialize IMDS client: {}", .{e});
         }
         return null;
     };
-    defer imds_response.deinit();
+    defer client.deinit();
 
-    const role_arn = imds_response.value.InstanceProfileArn;
-    const first_slash = std.mem.indexOf(u8, role_arn, "/"); // I think this is valid
-    if (first_slash == null) {
-        log.err("Could not find role name in arn '{s}'", .{role_arn});
-        return null;
-    }
-    return try allocator.dupe(u8, role_arn[first_slash.? + 1 ..]);
-}
-
-/// Note - this internal function assumes zfetch is initialized prior to use
-fn getImdsCredentials(allocator: std.mem.Allocator, client: *std.http.Client, role_name: []const u8, imds_token: []u8) !?auth.Credentials {
-    const url = try std.fmt.allocPrint(allocator, "http://169.254.169.254/latest/meta-data/iam/security-credentials/{s}/", .{role_name});
-    defer allocator.free(url);
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-    const response_payload = &aw.writer;
-    const req = try client.fetch(.{
-        .method = .GET,
-        .location = .{ .url = url },
-        .extra_headers = &[_]std.http.Header{
-            .{ .name = "X-aws-ec2-metadata-token", .value = imds_token },
-        },
-        .response_writer = response_payload,
-    });
-
-    if (req.status != .ok and req.status != .not_found) {
-        log.warn("Bad status code received from IMDS role endpoint: {}", .{@intFromEnum(req.status)});
-        return null;
-    }
-    if (req.status == .not_found) return null;
-    if (aw.written().len == 0) {
-        log.warn("Unexpected empty response from IMDS role endpoint", .{});
-        return null;
-    }
-
-    // log.debug("Read {d} bytes from imds v2 credentials endpoint", .{read});
-    const ImdsResponse = struct {
-        Code: []const u8,
-        LastUpdated: []const u8,
-        Type: []const u8,
-        AccessKeyId: []const u8,
-        SecretAccessKey: []const u8,
-        Token: []const u8,
-        Expiration: []const u8,
-    };
-    const imds_response = std.json.parseFromSlice(ImdsResponse, allocator, aw.written(), .{}) catch |e| {
-        log.err("Unexpected Json response from IMDS endpoint: {s}", .{aw.written()});
-        log.err("Error parsing json: {}", .{e});
-        if (@errorReturnTrace()) |trace| {
-            std.debug.dumpStackTrace(trace.*);
+    const role_name = client.getRoleName() catch |e| {
+        if (e == imds.ImdsError.MetadataNotFound) {
+            log.info("No IAM role associated with this instance", .{});
+        } else {
+            log.warn("Failed to get IAM role name from IMDS: {}", .{e});
         }
-
         return null;
     };
-    defer imds_response.deinit();
+    defer allocator.free(role_name);
 
-    const ret = auth.Credentials.init(
-        allocator,
-        try allocator.dupe(u8, imds_response.value.AccessKeyId),
-        try allocator.dupe(u8, imds_response.value.SecretAccessKey),
-        try allocator.dupe(u8, imds_response.value.Token),
-    );
-    log.debug("IMDSv2 credentials found. Access key: {s}", .{ret.access_key});
+    log.debug("Got role name '{s}'", .{role_name});
 
-    return ret;
-
-    // {
-    //   "Code" : "Success",
-    //   "LastUpdated" : "2022-02-08T23:49:02Z",
-    //   "Type" : "AWS-HMAC",
-    //   "AccessKeyId" : "ASEXAMPLE",
-    //   "SecretAccessKey" : "example",
-    //   "Token" : "IQoJb==",
-    //   "Expiration" : "2022-02-09T06:02:23Z"
-    // }
-
+    return client.getCredentials(role_name) catch |e| {
+        log.warn("Failed to get credentials from IMDS: {}", .{e});
+        return null;
+    };
 }
 
 fn getProfileCredentials(allocator: std.mem.Allocator, options: Profile) !?auth.Credentials {

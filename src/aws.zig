@@ -12,6 +12,8 @@ const servicemodel = @import("servicemodel.zig");
 const xml_shaper = @import("xml_shaper.zig");
 const xml_serializer = @import("xml_serializer.zig");
 
+pub const imds = @import("aws_imds.zig");
+
 const scoped_log = std.log.scoped(.aws);
 
 /// control all logs directly/indirectly used by aws sdk. Not recommended for
@@ -24,10 +26,12 @@ pub fn globalLogControl(aws_level: std.log.Level, http_level: std.log.Level, sig
     signing.logs_off = off;
     credentials.logs_off = off;
     awshttp.logs_off = off;
+    imds.logs_off = off;
     log_level = aws_level;
     awshttp.log_level = http_level;
     signing.log_level = signing_level;
     credentials.log_level = signing_level;
+    imds.log_level = signing_level;
 }
 /// Specifies logging level. This should not be touched unless the normal
 /// zig logging capabilities are inaccessible (e.g. during a build)
