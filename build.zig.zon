@@ -1,7 +1,7 @@
 .{
-    .name = .aws,
+    .name = .aws_sdk,
     .version = "0.0.1",
-    .fingerprint = 0x1f26b7b27005bb49,
+    .fingerprint = 0x6d0e0c7123f3a51,
     .paths = .{
         "build.zig",
         "build.zig.zon",

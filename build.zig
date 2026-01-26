@@ -1,5 +1,5 @@
-const std = @import("std");
 const Builder = @import("std").Build;
+const std = @import("std");
 
 const models_subdir = "codegen/sdk-codegen/aws-models/"; // note will probably not work on windows
 
@@ -128,13 +128,13 @@ pub fn build(b: *Builder) !void {
     mod_exe.addImport("service_manifest", service_manifest_module);
 
     // Expose module to others
-    const mod_aws = b.addModule("aws", .{
+    const mod_aws_sdk = b.addModule("aws_sdk", .{
         .root_source_file = b.path("src/aws.zig"),
         .target = target,
         .optimize = optimize,
     });
-    mod_aws.addImport("service_manifest", service_manifest_module);
-    configure(mod_aws, dep_mods, true);
+    mod_aws_sdk.addImport("service_manifest", service_manifest_module);
+    configure(mod_aws_sdk, dep_mods, true);
 
     // Expose module to others
     const mod_aws_signing = b.addModule("aws-signing", .{
@@ -198,7 +198,7 @@ pub fn build(b: *Builder) !void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const smoke_test = b.addTest(.{
-        .root_module = mod_aws,
+        .root_module = mod_aws_sdk,
         .filters = test_filters,
     });
     smoke_test.use_llvm = !no_llvm;
