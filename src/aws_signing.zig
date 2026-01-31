@@ -657,17 +657,16 @@ fn canonicalUri(allocator: std.mem.Allocator, path: []const u8, double_encode: b
     if (path.len == 0 or path[0] == '?' or path[0] == '#')
         return try allocator.dupe(u8, "/");
     log.debug("encoding path: {s}", .{path});
-    var encoded_once = try encodeUri(allocator, path);
+    const encoded_once = try encodeUri(allocator, path);
+    defer allocator.free(encoded_once);
     log.debug("encoded path (1): {s}", .{encoded_once});
     if (!double_encode or std.mem.indexOf(u8, path, "%") != null) { // TODO: Is the indexOf condition universally true?
         if (std.mem.lastIndexOf(u8, encoded_once, "?")) |i| {
-            _ = allocator.resize(encoded_once, i);
-            return encoded_once[0..i];
+            return try allocator.dupe(u8, encoded_once[0..i]);
         }
-        return encoded_once;
+        return try allocator.dupe(u8, encoded_once);
     }
-    defer allocator.free(encoded_once);
-    var encoded_twice = try encodeUri(allocator, encoded_once);
+    const encoded_twice = try encodeUri(allocator, encoded_once);
     defer allocator.free(encoded_twice);
     log.debug("encoded path (2): {s}", .{encoded_twice});
     if (std.mem.lastIndexOf(u8, encoded_twice, "?")) |i| {
