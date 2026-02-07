@@ -497,13 +497,10 @@ fn endpointException(
         };
     }
     if (std.mem.eql(u8, service, "s3")) {
-        if (request.path.len == 1 or std.mem.indexOf(u8, request.path[1..], "/") == null)
+        if (request.path.len <= 1)
             return null;
 
-        // We need to adjust the host and the path to accomodate virtual
-        // host addressing. This only applies to bucket operations, but
-        // right now I'm hoping that bucket operations do not include a path
-        // component, so will be handled by the return null statement above.
+        // Use virtual-hosted-style addressing for all bucket operations.
         const bucket_name = s3BucketFromPath(request.path);
         const rest_of_path = request.path[bucket_name.len + 1 ..];
         // TODO: Implement
@@ -511,13 +508,14 @@ fn endpointException(
         const uri = try std.fmt.allocPrint(allocator, "https://{s}.{s}{s}.{s}.{s}", .{ bucket_name, service, dualstack, realregion, domain });
         const host = try allocator.dupe(u8, uri["https://".len..]);
         log.debug("S3 host: {s}, scheme: {s}, port: {}", .{ host, "https", 443 });
+        const path = if (rest_of_path.len == 0) "/" else rest_of_path;
         return EndPoint{
             .uri = uri,
             .host = host,
             .scheme = "https",
             .port = 443,
             .allocator = allocator,
-            .path = try allocator.dupe(u8, rest_of_path),
+            .path = try allocator.dupe(u8, path),
         };
     }
     return null;
@@ -526,13 +524,15 @@ fn endpointException(
 fn s3BucketFromPath(path: []const u8) []const u8 {
     var in_bucket = false;
     var start: usize = 0;
-    for (path, 0..) |c, inx| {
+    for (path, 0..) |c, i| {
         if (c == '/') {
-            if (in_bucket) return path[start..inx];
-            start = inx + 1;
+            if (in_bucket) return path[start..i];
+            start = i + 1;
             in_bucket = true;
         }
     }
+    // No trailing slash — entire remainder is the bucket name
+    if (in_bucket) return path[start..];
     unreachable;
 }
 /// creates an endpoint from a uri string.
