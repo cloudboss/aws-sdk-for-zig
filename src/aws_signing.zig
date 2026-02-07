@@ -827,18 +827,16 @@ fn canonicalQueryString(allocator: std.mem.Allocator, path: []const u8) ![]const
             continue;
         }
 
-        // normal key=value stuff
-        const key = try encodeParamPart(allocator, i[0..first_equals.?]);
-        defer allocator.free(key);
-
-        const value = try encodeParamPart(allocator, i[first_equals.? + 1 ..]);
-        defer allocator.free(value);
-        // Double-encode any = in the value. But not anything else?
-        const weird_equals_in_value_thing = try replace(allocator, value, "%3D", "%253D");
-        defer allocator.free(weird_equals_in_value_thing);
+        // Query parameters are already URI-encoded by buildQuery,
+        // so use them directly. Only double-encode any = (%3D) in
+        // the value per the SigV4 spec.
+        const key = i[0..first_equals.?];
+        const value = i[first_equals.? + 1 ..];
+        const dbl_eq = try replace(allocator, value, "%3D", "%253D");
+        defer allocator.free(dbl_eq);
         try normalized.appendSlice(allocator, key);
         try normalized.append(allocator, '=');
-        try normalized.appendSlice(allocator, weird_equals_in_value_thing);
+        try normalized.appendSlice(allocator, dbl_eq);
     }
 
     return normalized.toOwnedSlice(allocator);
