@@ -212,22 +212,30 @@ pub fn Request(comptime request_action: anytype) type {
             log.debug("Rest processed uri: '{s}'", .{aws_request.path});
             // TODO: Make sure this doesn't get escaped here for S3
             aws_request.query = try buildQuery(options.client.allocator, request);
-            if (aws_request.query.len == 0) {
-                if (std.mem.indexOf(u8, aws_request.path, "?")) |inx| {
-                    log.debug("Detected query in path. Adjusting", .{});
-                    // Sometimes (looking at you, s3), the uri in the model
-                    // has a query string shoved into it. If that's the case,
-                    // we need to parse and straighten this all out
-                    const orig_path = aws_request.path; // save as we'll need to dealloc
-                    const orig_query = aws_request.query; // save as we'll need to dealloc
-                    // We need to chop the query off because apparently the other one whacks the
-                    // query string. TODO: RTFM on zig to figure out why
-                    aws_request.query = try options.client.allocator.dupe(u8, aws_request.path[inx..]);
-                    aws_request.path = try options.client.allocator.dupe(u8, aws_request.path[0..inx]);
-                    // log.debug("inx: {d}\n\tnew path: {s}\n\tnew query: {s}", .{ inx, aws_request.path, aws_request.query });
-                    options.client.allocator.free(orig_path);
+            // Sometimes (looking at you, s3), the uri in the model
+            // has a query string shoved into it. If that's the case,
+            // we need to parse and straighten this all out.
+            if (std.mem.indexOf(u8, aws_request.path, "?")) |i| {
+                log.debug("Detected query in path. Adjusting", .{});
+                const path_query = aws_request.path[i..];
+                const orig_path = aws_request.path;
+                aws_request.path = try options.client.allocator.dupe(u8, aws_request.path[0..i]);
+                if (aws_request.query.len == 0) {
+                    const orig_query = aws_request.query;
+                    aws_request.query = try options.client.allocator.dupe(u8, path_query);
+                    options.client.allocator.free(orig_query);
+                } else {
+                    // Merge: path has "?list-type=2", query has "?prefix=...",
+                    // result should be "?list-type=2&prefix=..."
+                    const orig_query = aws_request.query;
+                    aws_request.query = try std.mem.concat(
+                        options.client.allocator,
+                        u8,
+                        &.{ path_query, "&", orig_query[1..] },
+                    );
                     options.client.allocator.free(orig_query);
                 }
+                options.client.allocator.free(orig_path);
             }
             log.debug("Rest query: '{s}'", .{aws_request.query});
             defer options.client.allocator.free(aws_request.query);
